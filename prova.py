@@ -1,25 +1,33 @@
 import tensorflow as tf
 import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.metrics import classification_report
 
 # Funzione per estrarre l'etichetta dal nome del file
 def extract_label(file_path):
     parts = tf.strings.split(file_path, os.path.sep)
     filename = parts[-1]
     
-    class_name = ''
-    for part in tf.strings.split(filename, '_'):
-        if tf.strings.regex_full_match(part, '[a-zA-Z]+'):
-            class_name = tf.strings.join([class_name, part], separator='_')
-        else:
-            break
+    # Suddivide il filename usando '_'
+    split_filename = tf.strings.split(filename, '_')
     
-    return tf.strings.strip(class_name, '_')
+    # Prende tutti i pezzi fino al primo numero
+    class_name_parts = tf.strings.regex_replace(split_filename, r'\d+', '')  # Rimuove i numeri
+    class_name_parts = tf.strings.regex_replace(class_name_parts, r'\.jpeg|\.jpg|\.png', '')  # Rimuove le estensioni
+    
+    # class_name = tf.strings.reduce_join(class_name_parts, separator=' ')
+    class_name = tf.strings.regex_replace(class_name_parts, r'_', '')  # Rimuove spazi duplicati
+    class_name = tf.strings.strip(class_name)  # Rimuove eventuali spazi iniziali o finali
+    
+    return class_name
 
 # Percorso del dataset
-dataset_path = 'C:\\Users\\marco\\OneDrive\\Desktop\\SOD\\resized'
+dataset_path = 'C:\\Users\\marco\\OneDrive\\Desktop\\SOD\\images\\images'
 
 # Lista dei file nel dataset
-file_list = tf.data.Dataset.list_files(dataset_path + '/*/*')
+file_list = tf.data.Dataset.list_files(os.path.join(dataset_path, '*/*'))
 
 # Funzione per caricare e preprocessare un'immagine
 def load_and_preprocess_image(file_path):
@@ -42,10 +50,41 @@ def process_file(file_path):
     return image, label
 
 # Mappa la funzione di elaborazione su ogni file nel dataset
-dataset = file_list.map(process_file)
+dataset = file_list.map(process_file, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+# Estrazione e ordinamento dei nomi delle classi
+def get_class_names(dataset):
+    # Estrai solo le etichette
+    labels = dataset.map(lambda image, label: label)
+    # Usa un dataset di etichette uniche
+    unique_labels = labels.batch(1).map(lambda x: tf.unique(tf.reshape(x, [-1]))[0])
+    unique_labels = unique_labels.flat_map(lambda x: tf.data.Dataset.from_tensor_slices(x))
+    unique_labels = unique_labels.batch(1).map(lambda x: x[0])
+    unique_labels = list(unique_labels.as_numpy_iterator())
+    unique_labels = sorted(set([l.decode('utf-8') for l in unique_labels]))
+    return unique_labels
+
+class_names = get_class_names(dataset)
+class_name_to_index = {name: index for index, name in enumerate(class_names)}
+
+# Funzione per convertire le etichette in indice numerico
+def convert_label_to_index(image, label):
+    table = tf.lookup.StaticHashTable(
+        tf.lookup.KeyValueTensorInitializer(
+            keys=tf.constant(class_names),
+            values=tf.range(len(class_names), dtype=tf.int64)
+        ),
+        default_value=-1
+    )
+    label_index = table.lookup(label)
+    return image, label_index
+
+# Converti le etichette in indici numerici
+dataset = dataset.map(lambda x, y: tf.py_function(convert_label_to_index, [x, y], [tf.float32, tf.int64]), num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
 # Dividi il dataset in training e validation
-train_size = int(0.8 * len(file_list))
+dataset_size = sum(1 for _ in file_list)
+train_size = int(0.8 * dataset_size)
 train_dataset = dataset.take(train_size)
 validation_dataset = dataset.skip(train_size)
 
@@ -57,10 +96,6 @@ train_dataset = train_dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE
 
 # Batch il dataset di validation
 validation_dataset = validation_dataset.batch(batch_size)
-
-# Stampa dei nomi delle classi
-class_names = sorted(set(label.numpy().decode() for _, label in dataset))
-print("Class names: ", class_names)
 
 # Numero di classi
 num_classes = len(class_names)
@@ -122,5 +157,10 @@ plt.show()
 
 # Report di classificazione
 print('Classification Report')
-print(tf.keras.metrics.classification_report(val_labels, val_predictions, target_names=class_names))
+print(classification_report(val_labels, val_predictions, target_names=class_names))
+
+
+
+
+
 
